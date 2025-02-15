@@ -1,0 +1,5 @@
+/home/karac/MDNotes/build/CMakeFiles/markdown_editor.dir
+/home/karac/MDNotes/build/CMakeFiles/edit_cache.dir
+/home/karac/MDNotes/build/CMakeFiles/rebuild_cache.dir
+/home/karac/MDNotes/build/CMakeFiles/markdown_editor_autogen_timestamp_deps.dir
+/home/karac/MDNotes/build/CMakeFiles/markdown_editor_autogen.dir
