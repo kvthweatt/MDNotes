@@ -4,17 +4,15 @@
 #include <QTextEdit>
 #include <QWebEngineView>
 #include <QSplitter>
-#include <QVBoxLayout>
+#include <QScrollBar>
 #include <QMenuBar>
 #include <QToolBar>
 #include <QFileDialog>
 #include <QMessageBox>
-#include <QSettings>
-#include <QDebug>
 #include <QCloseEvent>
+#include <QFileInfo>
+#include <QTimer>
 #include <cmark.h>
-#include <fstream>
-#include <sstream>
 
 class MarkdownEditor : public QMainWindow {
     Q_OBJECT
@@ -24,20 +22,22 @@ private:
     QWebEngineView* preview;
     QString currentFile;
     bool isModified;
+    QToolBar* toolbar;
 
     void setupUI() {
         // Create main splitter
-        QSplitter* splitter = new QSplitter(Qt::Horizontal);
+        QSplitter* splitter = new QSplitter(Qt::Horizontal, this);
         setCentralWidget(splitter);
 
         // Setup editor
         editor = new QTextEdit();
         editor->setFont(QFont("Monospace", 10));
         editor->setLineWrapMode(QTextEdit::NoWrap);
-        connect(editor, &QTextEdit::textChanged, this, &MarkdownEditor::onTextChanged);
+        connect(editor, &QTextEdit::textChanged, this, &MarkdownEditor::updatePreview);
+        connect(editor, &QTextEdit::cursorPositionChanged, this, &MarkdownEditor::syncPreviewScroll);
         splitter->addWidget(editor);
 
-        // Setup preview
+        // Setup preview (QWebEngineView)
         preview = new QWebEngineView();
         preview->setMinimumWidth(200);
         splitter->addWidget(preview);
@@ -47,19 +47,12 @@ private:
         sizes << width()/2 << width()/2;
         splitter->setSizes(sizes);
 
-        // Create menus
+        // Create menus and toolbar
         createMenus();
+        createToolbar();
 
-        // Create toolbar for word wrap toggle
-        QToolBar* toolbar = addToolBar("Format");
-        QAction* wrapAction = toolbar->addAction("Toggle Word Wrap");
-        wrapAction->setCheckable(true);
-        connect(wrapAction, &QAction::toggled, this, &MarkdownEditor::toggleWordWrap);
-
-        // Initialize preview with empty content
-        preview->setHtml("");
-
-        // Set window properties
+        // Initialize
+        updatePreview();
         setWindowTitle("Markdown Editor");
         resize(1200, 800);
     }
@@ -98,19 +91,37 @@ private:
         fileMenu->addAction(exitAction);
     }
 
+    void createToolbar() {
+        toolbar = addToolBar("Formatting");
+        QAction* wrapAction = toolbar->addAction("Word Wrap");
+        wrapAction->setCheckable(true);
+        connect(wrapAction, &QAction::toggled, this, &MarkdownEditor::toggleWordWrap);
+    }
+
+    void syncPreviewScroll() {
+        if (!preview || !editor) return;
+
+        // Calculate scroll percentage
+        int editorPos = editor->verticalScrollBar()->value();
+        int editorMax = editor->verticalScrollBar()->maximum();
+        float ratio = editorMax > 0 ? (float)editorPos / editorMax : 0;
+
+        // Apply to preview
+        preview->page()->runJavaScript(
+            QString("window.scrollTo(0, document.body.scrollHeight * %1);").arg(ratio)
+        );
+    }
+
     void updatePreview() {
         QString markdown = editor->toPlainText();
         QByteArray markdownUtf8 = markdown.toUtf8();
         
-        // Convert markdown to HTML using cmark
         char* html = cmark_markdown_to_html(
             markdownUtf8.constData(),
             markdownUtf8.size(),
             CMARK_OPT_DEFAULT
         );
 
-        // Create full HTML document
-        QString htmlContent = QString::fromUtf8(html);
         QString fullHtml = QString(R"(
             <!DOCTYPE html>
             <html>
@@ -118,54 +129,78 @@ private:
                 <meta charset="UTF-8">
                 <style>
                     body {
-                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
                         line-height: 1.6;
                         padding: 20px;
-                        max-width: 900px;
+                        max-width: 800px;
                         margin: 0 auto;
+                        color: #333;
+                    }
+                    h1, h2, h3 {
+                        color: #111;
+                        margin-top: 1.2em;
+                        margin-bottom: 0.6em;
+                    }
+                    pre, code {
+                        font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+                        background-color: #f6f8fa;
+                        border-radius: 3px;
                     }
                     pre {
-                        background-color: #f6f8fa;
                         padding: 16px;
-                        border-radius: 6px;
-                        overflow-x: auto;
+                        overflow: auto;
+                        line-height: 1.45;
                     }
                     code {
-                        font-family: 'Consolas', 'Monaco', monospace;
+                        padding: 0.2em 0.4em;
+                        font-size: 85%;
+                    }
+                    blockquote {
+                        border-left: 4px solid #dfe2e5;
+                        color: #6a737d;
+                        padding: 0 1em;
+                        margin-left: 0;
+                    }
+                    table {
+                        border-collapse: collapse;
+                        width: 100%;
+                    }
+                    th, td {
+                        border: 1px solid #dfe2e5;
+                        padding: 6px 13px;
+                    }
+                    th {
+                        background-color: #f6f8fa;
+                        font-weight: 600;
                     }
                     img {
                         max-width: 100%;
                     }
                 </style>
             </head>
-            <body>
-                %1
-            </body>
+            <body>%1</body>
             </html>
-        )").arg(htmlContent);
+        )").arg(QString::fromUtf8(html));
 
-        // Update preview directly
         preview->setHtml(fullHtml);
-
         free(html);
+        
+        // Sync scroll position after slight delay
+        QTimer::singleShot(50, this, &MarkdownEditor::syncPreviewScroll);
     }
 
+    // [Rest of the original file handling methods remain unchanged...]
     bool maybeSave() {
-        if (!isModified)
-            return true;
+        if (!isModified) return true;
 
         QMessageBox::StandardButton ret = QMessageBox::warning(
-            this,
-            "Save Changes",
+            this, "Save Changes",
             "The document has been modified.\nDo you want to save your changes?",
             QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel
         );
 
-        if (ret == QMessageBox::Save)
-            return saveFile();
-        else if (ret == QMessageBox::Cancel)
-            return false;
-
+        if (ret == QMessageBox::Save) return saveFile();
+        else if (ret == QMessageBox::Cancel) return false;
         return true;
     }
 
@@ -176,15 +211,6 @@ private:
         if (isModified)
             title = "*" + title;
         setWindowTitle(title);
-    }
-
-private slots:
-    void onTextChanged() {
-        if (!editor->document()->isEmpty() || !currentFile.isEmpty()) {
-            isModified = true;
-            updateWindowTitle();
-        }
-        updatePreview();
     }
 
     void newFile() {
@@ -199,9 +225,7 @@ private slots:
     void openFile() {
         if (maybeSave()) {
             QString fileName = QFileDialog::getOpenFileName(
-                this,
-                "Open Markdown File",
-                QString(),
+                this, "Open Markdown File", QString(),
                 "Markdown Files (*.md *.markdown);;All Files (*.*)"
             );
 
@@ -218,9 +242,7 @@ private slots:
     }
 
     bool saveFile() {
-        if (currentFile.isEmpty()) {
-            return saveFileAs();
-        }
+        if (currentFile.isEmpty()) return saveFileAs();
 
         QFile file(currentFile);
         if (file.open(QFile::WriteOnly | QFile::Text)) {
@@ -230,60 +252,45 @@ private slots:
             return true;
         }
 
-        QMessageBox::warning(
-            this,
-            "Save Error",
-            "Failed to save file: " + file.errorString()
-        );
+        QMessageBox::warning(this, "Save Error", "Failed to save file: " + file.errorString());
         return false;
     }
 
     bool saveFileAs() {
         QString fileName = QFileDialog::getSaveFileName(
-            this,
-            "Save Markdown File",
-            QString(),
+            this, "Save Markdown File", QString(),
             "Markdown Files (*.md *.markdown);;All Files (*.*)"
         );
 
-        if (fileName.isEmpty())
-            return false;
+        if (fileName.isEmpty()) return false;
 
         currentFile = fileName;
         return saveFile();
     }
 
     void toggleWordWrap(bool wrap) {
-        editor->setLineWrapMode(
-            wrap ? QTextEdit::WidgetWidth : QTextEdit::NoWrap
-        );
+        editor->setLineWrapMode(wrap ? QTextEdit::WidgetWidth : QTextEdit::NoWrap);
     }
 
 protected:
     void closeEvent(QCloseEvent* event) override {
-        if (maybeSave())
-            event->accept();
-        else
-            event->ignore();
+        if (maybeSave()) event->accept();
+        else event->ignore();
     }
 
 public:
-    MarkdownEditor(QWidget* parent = nullptr)
-        : QMainWindow(parent), isModified(false)
-    {
+    MarkdownEditor(QWidget* parent = nullptr) : QMainWindow(parent), isModified(false) {
         setupUI();
     }
 };
 
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
-    
     QApplication::setApplicationName("Markdown Editor");
     QApplication::setOrganizationName("YourOrg");
 
     MarkdownEditor editor;
     editor.show();
-
     return app.exec();
 }
 
